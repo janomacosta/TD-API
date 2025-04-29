@@ -1,72 +1,28 @@
 #Tariff Design
-from fastapi import FastAPI
-from pydantic import BaseModel
+from fastapi import FastAPI, UploadFile, File, Form
 import pandas as pd
 import numpy as np
 from scipy.optimize import fsolve
 
 app = FastAPI()
 
-# --------- MODELOS DE ENTRADA ---------
-
-class STR1Inputs(BaseModel):
-    upper_limit: float
-    customer_charge: float
-    first_block: float
-    second_block: float
-    data: list
-
-class STR2Inputs(BaseModel):
-    upper_limit_std: float
-    customer_charge_std: float
-    first_block_std: float
-    second_block_std: float
-    upper_limit_bs: float
-    customer_charge_bs: float
-    first_block_bs: float
-    break_even: float
-    revenue_target: float
-    data: list
-
-class BDERInputs(BaseModel):
-    data: list
-    demand_lookup: list
-    power_factor: float
-    revenue_target: float
-    energy_lrmc: float
-    demand_lrmc: float
-    customer_lrmc: float
-    on_peak_demand_share: float
-    partial_peak_demand_share: float
-    off_peak_demand_share: float
-    lrmc_on_peak: float
-    lrmc_partial_peak: float
-    lrmc_off_peak: float
-    initial_off_peak_demand_charge: float
-    on_peak_energy_share: float
-    partial_peak_energy_share: float
-    off_peak_energy_share: float
-    initial_off_peak_energy_charge: float
-
-class DPrePaidInputs(BaseModel):
-    upper_limit: float
-    early_payment_incentive: float
-    revenue_target: float
-    initial_second_block_charge: float
-    data: list
-
-# --------- ENDPOINTS ---------
+months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
 
 @app.post("/str1")
-def calculate_str1(inputs: STR1Inputs):
-    df = pd.DataFrame(inputs.data)
-    months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
+async def calculate_str1_from_csv(
+    file: UploadFile = File(...),
+    upper_limit: float = Form(...),
+    customer_charge: float = Form(...),
+    first_block: float = Form(...),
+    second_block: float = Form(...)
+):
+    df = pd.read_csv(file.file)
 
     for month in months:
         df[f"STR1_{month}"] = (
-            inputs.customer_charge +
-            (df[month].clip(upper=inputs.upper_limit) * inputs.first_block) +
-            ((df[month] - inputs.upper_limit).clip(lower=0) * inputs.second_block)
+            customer_charge +
+            (df[month].clip(upper=upper_limit) * first_block) +
+            ((df[month] - upper_limit).clip(lower=0) * second_block)
         )
 
     df["SumSTR1"] = df[[f"STR1_{month}" for month in months]].sum(axis=1)
@@ -75,73 +31,80 @@ def calculate_str1(inputs: STR1Inputs):
     return {"total_revenue": total_revenue}
 
 @app.post("/str2")
-def calculate_str2(inputs: STR2Inputs):
-    df = pd.DataFrame(inputs.data)
-    df["Average"] = df[[ "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]].mean(axis=1)
-    is_standard = df["Average"] > inputs.break_even
-    months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
+async def calculate_str2_from_csv(
+    file: UploadFile = File(...),
+    upper_limit_std: float = Form(...),
+    customer_charge_std: float = Form(...),
+    first_block_std: float = Form(...),
+    second_block_std: float = Form(...),
+    upper_limit_bs: float = Form(...),
+    customer_charge_bs: float = Form(...),
+    first_block_bs: float = Form(...),
+    break_even: float = Form(...),
+    revenue_target: float = Form(...)
+):
+    df = pd.read_csv(file.file)
+    df["Average"] = df[months].mean(axis=1)
+    is_standard = df["Average"] > break_even
 
     def objective(x):
-        first_block_std = x
-        second_block_std = inputs.second_block_std
+        first_std = x[0]
+        second_std = second_block_std
 
         for month in months:
             billing_std = (
-                inputs.customer_charge_std +
-                (df[month].clip(upper=inputs.upper_limit_std) * first_block_std) +
-                ((df[month] - inputs.upper_limit_std).clip(lower=0) * second_block_std)
+                customer_charge_std +
+                (df[month].clip(upper=upper_limit_std) * first_std) +
+                ((df[month] - upper_limit_std).clip(lower=0) * second_std)
             )
 
             billing_bs = (
-                inputs.customer_charge_bs +
-                (df[month].clip(upper=inputs.upper_limit_bs) * inputs.first_block_bs) +
-                ((df[month] - inputs.upper_limit_bs).clip(lower=0) * inputs.first_block_bs)
+                customer_charge_bs +
+                (df[month].clip(upper=upper_limit_bs) * first_block_bs) +
+                ((df[month] - upper_limit_bs).clip(lower=0) * first_block_bs)
             )
 
             df[f"STR2_{month}"] = billing_std.where(is_standard, billing_bs)
 
         df["SumSTR2"] = df[[f"STR2_{month}" for month in months]].sum(axis=1)
-        total = df["SumSTR2"].sum()
-        return total - inputs.revenue_target
+        return df["SumSTR2"].sum() - revenue_target
 
-    solution = fsolve(objective, inputs.first_block_std)[0]
+    solution = fsolve(objective, [first_block_std])[0]
 
-    # Calcular revenue final con el valor optimizado
     for month in months:
         billing_std = (
-            inputs.customer_charge_std +
-            (df[month].clip(upper=inputs.upper_limit_std) * solution) +
-            ((df[month] - inputs.upper_limit_std).clip(lower=0) * inputs.second_block_std)
+            customer_charge_std +
+            (df[month].clip(upper=upper_limit_std) * solution) +
+            ((df[month] - upper_limit_std).clip(lower=0) * second_block_std)
         )
 
         billing_bs = (
-            inputs.customer_charge_bs +
-            (df[month].clip(upper=inputs.upper_limit_bs) * inputs.first_block_bs) +
-            ((df[month] - inputs.upper_limit_bs).clip(lower=0) * inputs.first_block_bs)
+            customer_charge_bs +
+            (df[month].clip(upper=upper_limit_bs) * first_block_bs) +
+            ((df[month] - upper_limit_bs).clip(lower=0) * first_block_bs)
         )
 
         df[f"STR2_{month}"] = billing_std.where(is_standard, billing_bs)
 
     df["SumSTR2"] = df[[f"STR2_{month}" for month in months]].sum(axis=1)
-    revenue_total_str2 = df["SumSTR2"].sum()
+    total_revenue = df["SumSTR2"].sum()
 
     return {
         "first_block_std_final": solution,
-        "revenue_total_str2_final": revenue_total_str2
+        "revenue_total_str2_final": total_revenue
     }
 
-@app.post("/b_der")
-def calculate_bder(inputs: BDERInputs):
-    df = pd.DataFrame(inputs.data)
-    demand_lookup = pd.DataFrame(inputs.demand_lookup)
-    demand_lookup["consumption_kWh"] = demand_lookup["consumption_kWh"].astype(int)
+@app.post("/demand_total")
+async def calculate_total_demand(
+    file: UploadFile = File(...),
+    demand_file: UploadFile = File(...),
+    power_factor: float = Form(...)
+):
+    df = pd.read_csv(file.file)
+    demand_lookup = pd.read_csv(demand_file.file)
     demand_lookup = demand_lookup.sort_values(by="consumption_kWh", ascending=False)
-
     demand_dict = demand_lookup.set_index("consumption_kWh")["demand_kW"].to_dict()
     consumption_values = list(demand_dict.keys())
-    months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
-
-    original_consumption = df[months].copy()
 
     for month in months:
         df[month] = df[month].astype(float)
@@ -158,71 +121,53 @@ def calculate_bder(inputs: BDERInputs):
             return 0
 
         df.loc[mask, f"demand_{month}"] = df.loc[mask, month].apply(find_nearest_lower)
-        df.loc[df[f"demand_{month}"] > 0, f"demand_{month}"] /= inputs.power_factor
-
-    df[months] = original_consumption
+        df.loc[df[f"demand_{month}"] > 0, f"demand_{month}"] /= power_factor
 
     df["demand_Sum"] = df[[f"demand_{month}" for month in months]].sum(axis=1)
     total_demand = df["demand_Sum"].sum()
 
-    # TOU Demand Charges
-    def demand_objective(x):
-        off_peak = x
-        partial_peak = off_peak * inputs.lrmc_partial_peak
-        on_peak = off_peak * inputs.lrmc_on_peak
-        demand_revenue = (off_peak * total_demand * inputs.off_peak_demand_share +
-                          partial_peak * total_demand * inputs.partial_peak_demand_share +
-                          on_peak * total_demand * inputs.on_peak_demand_share)
-        return inputs.demand_lrmc / (inputs.energy_lrmc + inputs.demand_lrmc + inputs.customer_lrmc) * inputs.revenue_target - demand_revenue
+    return {"total_demand_estimated": total_demand}
 
-    optimized_off_peak_demand = fsolve(demand_objective, inputs.initial_off_peak_demand_charge)[0]
+@app.post("/dprepaid")
+async def calculate_dprepaid(
+    file: UploadFile = File(...),
+    upper_limit: float = Form(...),
+    early_payment_incentive: float = Form(...),
+    revenue_target: float = Form(...),
+    initial_second_block_charge: float = Form(...),
+    str2_customer_charge_std: float = Form(...),
+    str2_first_block_std: float = Form(...),
+    str2_first_block_bs: float = Form(...)
+):
+    df = pd.read_csv(file.file)
+    df["Average"] = df[months].mean(axis=1)
+    customer_charge = 0
 
-    # TOU Energy Charges
-    def energy_objective(x):
-        off_peak = x
-        partial_peak = off_peak * inputs.lrmc_partial_peak
-        on_peak = off_peak * inputs.lrmc_on_peak
-        energy_revenue = (off_peak * inputs.revenue_target * inputs.off_peak_energy_share +
-                          partial_peak * inputs.revenue_target * inputs.partial_peak_energy_share +
-                          on_peak * inputs.revenue_target * inputs.on_peak_energy_share)
-        return inputs.energy_lrmc / (inputs.energy_lrmc + inputs.demand_lrmc + inputs.customer_lrmc) * inputs.revenue_target - energy_revenue
-
-    optimized_off_peak_energy = fsolve(energy_objective, inputs.initial_off_peak_energy_charge)[0]
-
-    return {
-        "optimized_off_peak_demand_charge": optimized_off_peak_demand,
-        "optimized_off_peak_energy_charge": optimized_off_peak_energy,
-        "total_demand_estimated": total_demand
-    }
-
-@app.post("/d_prepaid")
-def calculate_dprepaid(inputs: DPrePaidInputs):
-    df = pd.DataFrame(inputs.data)
-    df["Average"] = df[["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]].mean(axis=1)
+    pp_first_block = ((str2_customer_charge_std - early_payment_incentive) / upper_limit +
+                      (str2_first_block_std + str2_first_block_bs) / 2)
 
     def objective(x):
-        pp_second_block = x
+        second_block = x[0]
         df["PP_Bill_Month"] = (
-            0 +
-            df["Average"].clip(upper=inputs.upper_limit) * inputs.upper_limit +
-            (df["Average"] - inputs.upper_limit).clip(lower=0) * pp_second_block
+            customer_charge +
+            df["Average"].clip(upper=upper_limit) * pp_first_block +
+            (df["Average"] - upper_limit).clip(lower=0) * second_block
         )
         df["PP_Bill_Annual"] = df["PP_Bill_Month"] * 12
-        revenue_total_pp = df["PP_Bill_Annual"].sum()
-        return inputs.revenue_target - revenue_total_pp
+        return revenue_target - df["PP_Bill_Annual"].sum()
 
-    solution = fsolve(objective, inputs.initial_second_block_charge)[0]
+    solution = fsolve(objective, [initial_second_block_charge])[0]
 
-    # Calcular revenue final
     df["PP_Bill_Month"] = (
-        0 +
-        df["Average"].clip(upper=inputs.upper_limit) * inputs.upper_limit +
-        (df["Average"] - inputs.upper_limit).clip(lower=0) * solution
+        customer_charge +
+        df["Average"].clip(upper=upper_limit) * pp_first_block +
+        (df["Average"] - upper_limit).clip(lower=0) * solution
     )
     df["PP_Bill_Annual"] = df["PP_Bill_Month"] * 12
-    revenue_total_pp = df["PP_Bill_Annual"].sum()
+    revenue_total = df["PP_Bill_Annual"].sum()
 
     return {
-        "optimized_second_block_charge": solution,
-        "revenue_total_pp": revenue_total_pp
+        "pp_first_block": pp_first_block,
+        "pp_second_block": solution,
+        "revenue_total_pp": revenue_total
     }
