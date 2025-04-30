@@ -36,7 +36,6 @@ async def calculate_str2_from_csv(
     upper_limit_std: float = Form(...),
     customer_charge_std: float = Form(...),
     first_block_std: float = Form(...),
-    second_block_std: float = Form(...),
     sb_aspercentageoffb: float = Form(...),
     upper_limit_bs: float = Form(...),
     customer_charge_bs: float = Form(...),
@@ -50,7 +49,25 @@ async def calculate_str2_from_csv(
 
     def objective(x):
         first_std = x[0]
-        second_std = second_block_std*sb_aspercentageoffb
+        second_std = first_std * sb_aspercentageoffb
+
+        # Calcular factura break-even para STD
+        if break_even <= upper_limit_std:
+            break_even_bill = break_even * first_std + customer_charge_std
+        else:
+            break_even_bill = (
+                upper_limit_std * first_std +
+                (break_even - upper_limit_std) * second_std +
+                customer_charge_std
+            )
+
+        # Calcular segundo bloque BS endógeno
+        if upper_limit_bs < break_even:
+            second_block_bs = (
+                break_even_bill - customer_charge_bs - upper_limit_bs * first_block_bs
+            ) / (break_even - upper_limit_bs)
+        else:
+            raise ValueError("El Break-Even debe ser mayor que el Upper Limit de BS")
 
         for month in months:
             billing_std = (
@@ -62,7 +79,7 @@ async def calculate_str2_from_csv(
             billing_bs = (
                 customer_charge_bs +
                 (df[month].clip(upper=upper_limit_bs) * first_block_bs) +
-                ((df[month] - upper_limit_bs).clip(lower=0) * first_block_bs)
+                ((df[month] - upper_limit_bs).clip(lower=0) * second_block_bs)
             )
 
             df[f"STR2_{month}"] = billing_std.where(is_standard, billing_bs)
@@ -71,18 +88,33 @@ async def calculate_str2_from_csv(
         return df["SumSTR2"].sum() - revenue_target
 
     solution = fsolve(objective, [first_block_std])[0]
+    second_std_final = solution * sb_aspercentageoffb
+
+    # Recalcular break-even y segundo bloque BS con bloque STD final
+    if break_even <= upper_limit_std:
+        break_even_bill = break_even * solution + customer_charge_std
+    else:
+        break_even_bill = (
+            upper_limit_std * solution +
+            (break_even - upper_limit_std) * second_std_final +
+            customer_charge_std
+        )
+
+    second_block_bs_final = (
+        break_even_bill - customer_charge_bs - upper_limit_bs * first_block_bs
+    ) / (break_even - upper_limit_bs)
 
     for month in months:
         billing_std = (
             customer_charge_std +
             (df[month].clip(upper=upper_limit_std) * solution) +
-            ((df[month] - upper_limit_std).clip(lower=0) * second_block_std)
+            ((df[month] - upper_limit_std).clip(lower=0) * second_std_final)
         )
 
         billing_bs = (
             customer_charge_bs +
             (df[month].clip(upper=upper_limit_bs) * first_block_bs) +
-            ((df[month] - upper_limit_bs).clip(lower=0) * first_block_bs)
+            ((df[month] - upper_limit_bs).clip(lower=0) * second_block_bs_final)
         )
 
         df[f"STR2_{month}"] = billing_std.where(is_standard, billing_bs)
@@ -94,6 +126,7 @@ async def calculate_str2_from_csv(
         "first_block_std_final": solution,
         "revenue_total_str2_final": total_revenue
     }
+
 
 @app.post("/demand_total")
 async def calculate_total_demand(
