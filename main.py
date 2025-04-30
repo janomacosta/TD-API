@@ -37,6 +37,7 @@ async def calculate_str2_from_csv(
     customer_charge_std: float = Form(...),
     first_block_std: float = Form(...),
     second_block_std: float = Form(...),
+    sb_aspercentageoffb: float = Form(...),
     upper_limit_bs: float = Form(...),
     customer_charge_bs: float = Form(...),
     first_block_bs: float = Form(...),
@@ -49,7 +50,7 @@ async def calculate_str2_from_csv(
 
     def objective(x):
         first_std = x[0]
-        second_std = second_block_std
+        second_std = second_block_std*sb_aspercentageoffb
 
         for month in months:
             billing_std = (
