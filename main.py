@@ -9,14 +9,14 @@ app = FastAPI()
 months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
 
 @app.post("/str1")
-async def calculate_str1_from_csv(
+async def calculate_str1_from_xlsx(
     file: UploadFile = File(...),
     upper_limit: float = Form(...),
     customer_charge: float = Form(...),
     first_block: float = Form(...),
     second_block: float = Form(...)
 ):
-    df = pd.read_csv(file.file)
+    df = pd.read_excel(file.file)
 
     for month in months:
         df[f"STR1_{month}"] = (
